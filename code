@@ -1,0 +1,904 @@
+import os
+import logging
+import random
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, field
+
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, 
+    CallbackQueryHandler, filters, ContextTypes
+)
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    BotCommand, BotCommandScopeDefault
+)
+
+# === Configuration ===
+class Config:
+    """Bot configuration constants"""
+    BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8078101972:AAFKYPfpf0h6bN7GVCxyOd2kmBNaSa-V1uk")
+    LOG_LEVEL = logging.INFO
+    MAX_RECOMMENDATIONS = 5
+    CACHE_TIMEOUT = 3600  # 1 hour
+
+# === Logging Setup ===
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=Config.LOG_LEVEL,
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('bot.log', encoding='utf-8')
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# === Data Models ===
+@dataclass
+class UserProfile:
+    """User preference profile"""
+    user_id: int
+    interests: List[str] = field(default_factory=list)
+    preferred_countries: List[str] = field(default_factory=list)
+    preferred_seasons: List[str] = field(default_factory=list)
+    budget_level: Optional[str] = None
+    travel_style: Optional[str] = None
+    last_updated: datetime = field(default_factory=datetime.now)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'interests': self.interests,
+            'countries': self.preferred_countries,
+            'seasons': self.preferred_seasons,
+            'budget': self.budget_level,
+            'style': self.travel_style,
+            'updated': self.last_updated.isoformat()
+        }
+
+@dataclass
+class Destination:
+    """Travel destination model"""
+    name: str
+    country: str
+    description: str
+    activities: List[str]
+    best_seasons: List[str]
+    budget_level: str
+    coordinates: Optional[tuple] = None
+    rating: float = 0.0
+
+class TravelKnowledgeGraph:
+    """Enhanced knowledge graph for travel destinations"""
+
+    def __init__(self):
+        self.destinations = self._initialize_destinations()
+        logger.info("Knowledge graph initialized with destinations")
+
+    def _initialize_destinations(self):
+        """Initialize the knowledge graph with comprehensive destination data"""
+        return {
+            "Rome": {
+                "country": "Italy", "type": "historic_city",
+                "activities": ["museums", "history", "architecture", "food", "art"],
+                "seasons": ["spring", "autumn"], "budget": "medium",
+                "description": "The Eternal City with 3000 years of history, incredible architecture, and world-class cuisine",
+                "rating": 4.8
+            },
+            "Florence": {
+                "country": "Italy", "type": "art_city",
+                "activities": ["museums", "art", "architecture", "food", "shopping"],
+                "seasons": ["spring", "summer", "autumn"], "budget": "medium",
+                "description": "Renaissance masterpiece with unparalleled art collections and Tuscan charm",
+                "rating": 4.7
+            },
+            "Tokyo": {
+                "country": "Japan", "type": "modern_city",
+                "activities": ["technology", "culture", "food", "shopping", "nightlife"],
+                "seasons": ["spring", "autumn"], "budget": "high",
+                "description": "Futuristic metropolis blending cutting-edge technology with ancient traditions",
+                "rating": 4.9
+            },
+            "Kyoto": {
+                "country": "Japan", "type": "cultural_city",
+                "activities": ["temples", "culture", "nature", "meditation", "traditional_arts"],
+                "seasons": ["spring", "autumn"], "budget": "medium",
+                "description": "Ancient capital with thousands of temples, gardens, and preserved traditions",
+                "rating": 4.8
+            },
+            "Paris": {
+                "country": "France", "type": "romantic_city",
+                "activities": ["museums", "art", "romance", "food", "fashion"],
+                "seasons": ["spring", "summer", "autumn"], "budget": "high",
+                "description": "City of Light offering world-class museums, cuisine, and romantic atmosphere",
+                "rating": 4.6
+            },
+            "Barcelona": {
+                "country": "Spain", "type": "coastal_city",
+                "activities": ["architecture", "beach", "nightlife", "food", "art"],
+                "seasons": ["spring", "summer", "autumn"], "budget": "medium",
+                "description": "Gaudí's architectural wonderland with Mediterranean beaches and vibrant culture",
+                "rating": 4.7
+            },
+            "Santorini": {
+                "country": "Greece", "type": "island",
+                "activities": ["romance", "sunset", "wine", "relaxation", "beach"],
+                "seasons": ["spring", "summer", "autumn"], "budget": "high",
+                "description": "Iconic Greek island with stunning sunsets, white-washed buildings, and volcanic landscapes",
+                "rating": 4.8
+            },
+            "Bali": {
+                "country": "Indonesia", "type": "tropical_island",
+                "activities": ["beach", "nature", "spirituality", "relaxation", "adventure"],
+                "seasons": ["summer", "winter"], "budget": "low",
+                "description": "Tropical paradise with ancient temples, rice terraces, and spiritual experiences",
+                "rating": 4.6
+            },
+            "Iceland": {
+                "country": "Iceland", "type": "nature_destination",
+                "activities": ["nature", "photography", "northern_lights", "hot_springs", "hiking"],
+                "seasons": ["summer", "winter"], "budget": "high",
+                "description": "Land of fire and ice with glaciers, geysers, and otherworldly landscapes",
+                "rating": 4.9
+            },
+            "Swiss_Alps": {
+                "country": "Switzerland", "type": "mountain_region",
+                "activities": ["skiing", "hiking", "nature", "photography", "adventure"],
+                "seasons": ["summer", "winter"], "budget": "high",
+                "description": "Majestic alpine peaks offering world-class skiing and breathtaking mountain views",
+                "rating": 4.8
+            },
+            "Prague": {
+                "country": "Czech Republic", "type": "historic_city",
+                "activities": ["history", "architecture", "beer", "romance", "music"],
+                "seasons": ["spring", "summer", "autumn"], "budget": "low",
+                "description": "Fairy-tale city with Gothic architecture, charming bridges, and rich cultural heritage",
+                "rating": 4.7
+            },
+            "Amsterdam": {
+                "country": "Netherlands", "type": "canal_city",
+                "activities": ["museums", "cycling", "canals", "nightlife", "art"],
+                "seasons": ["spring", "summer"], "budget": "medium",
+                "description": "Canal-laced city with world-class museums, liberal culture, and bike-friendly streets",
+                "rating": 4.5
+            },
+            "Dubai": {
+                "country": "UAE", "type": "luxury_city",
+                "activities": ["shopping", "luxury", "architecture", "beach", "adventure"],
+                "seasons": ["winter", "spring"], "budget": "high",
+                "description": "Ultra-modern city with luxury shopping, stunning architecture, and desert adventures",
+                "rating": 4.6
+            },
+            "Maldives": {
+                "country": "Maldives", "type": "tropical_paradise",
+                "activities": ["beach", "diving", "relaxation", "romance", "water_sports"],
+                "seasons": ["winter", "spring"], "budget": "high",
+                "description": "Pristine tropical paradise with crystal-clear waters and overwater bungalows",
+                "rating": 4.9
+            },
+            "New_York": {
+                "country": "USA", "type": "cosmopolitan_city",
+                "activities": ["museums", "theater", "shopping", "food", "nightlife"],
+                "seasons": ["spring", "autumn"], "budget": "high",
+                "description": "The city that never sleeps with Broadway shows, world-class museums, and iconic skyline",
+                "rating": 4.7
+            },
+            "London": {
+                "country": "United Kingdom", "type": "cosmopolitan_city",
+                "activities": ["museums", "history", "theater", "food", "royalty"],
+                "seasons": ["spring", "summer", "autumn"], "budget": "high",
+                "description": "Historic capital with royal palaces, world-class museums, and rich cultural heritage",
+                "rating": 4.6
+            },
+            "Vienna": {
+                "country": "Austria", "type": "cultural_city",
+                "activities": ["music", "art", "coffee", "architecture", "history"],
+                "seasons": ["spring", "summer", "autumn"], "budget": "medium",
+                "description": "Imperial city of music and coffee culture with stunning baroque architecture",
+                "rating": 4.7
+            },
+            "Budapest": {
+                "country": "Hungary", "type": "thermal_city",
+                "activities": ["thermal_baths", "history", "nightlife", "architecture", "culture"],
+                "seasons": ["spring", "summer", "autumn"], "budget": "low",
+                "description": "Pearl of the Danube with magnificent thermal baths and stunning architecture",
+                "rating": 4.6
+            }
+        }
+
+    def find_destinations(self, interests: List[str] = None, 
+                         countries: List[str] = None, 
+                         seasons: List[str] = None,
+                         budget: str = None) -> List[Dict[str, Any]]:
+        """Find destinations matching user criteria with advanced scoring"""
+        results = []
+
+        for dest_name, dest_data in self.destinations.items():
+            score = 0
+            matching_reasons = []
+
+            # Score based on interests
+            if interests:
+                matched_interests = set(interests) & set(dest_data["activities"])
+                if matched_interests:
+                    score += len(matched_interests) * 3
+                    matching_reasons.extend([f"perfect for {interest}" for interest in matched_interests])
+
+            # Score based on countries
+            if countries:
+                if any(c.lower() in dest_data["country"].lower() for c in countries):
+                    score += 5
+                    matching_reasons.append(f"located in {dest_data['country']}")
+
+            # Score based on seasons
+            if seasons:
+                matched_seasons = set(seasons) & set(dest_data["seasons"])
+                if matched_seasons:
+                    score += len(matched_seasons) * 2
+                    matching_reasons.extend([f"ideal for {season}" for season in matched_seasons])
+
+            # Score based on budget
+            if budget:
+                if budget == dest_data["budget"]:
+                    score += 2
+                    matching_reasons.append(f"fits {budget} budget")
+
+            # Add base rating score
+            score += dest_data["rating"]
+
+            if score > 0 or not any([interests, countries, seasons, budget]):
+                results.append({
+                    "name": dest_name.replace("_", " "),
+                    "country": dest_data["country"],
+                    "description": dest_data["description"],
+                    "score": score,
+                    "rating": dest_data["rating"],
+                    "budget": dest_data["budget"],
+                    "activities": dest_data["activities"],
+                    "seasons": dest_data["seasons"],
+                    "reasons": matching_reasons
+                })
+
+        # Sort by score and rating
+        results.sort(key=lambda x: (x["score"], x["rating"]), reverse=True)
+        return results[:Config.MAX_RECOMMENDATIONS]
+
+class TravelBot:
+    """Main bot class with enhanced functionality"""
+
+    def __init__(self):
+        self.knowledge_graph = TravelKnowledgeGraph()
+        self.user_profiles: Dict[int, UserProfile] = {}
+        self.user_button_clicks: Dict[int, Dict[str, List[float]]] = {}  # Track button clicks per user
+        self.application = None
+        logger.info("TravelBot initialized")
+
+    def get_user_profile(self, user_id: int) -> UserProfile:
+        """Get or create user profile"""
+        if user_id not in self.user_profiles:
+            self.user_profiles[user_id] = UserProfile(user_id=user_id)
+        return self.user_profiles[user_id]
+
+    def create_interests_keyboard(self) -> InlineKeyboardMarkup:
+        """Create enhanced interests selection keyboard"""
+        keyboard = [
+            [InlineKeyboardButton("🏛️ Museums & Art", callback_data="interest_museums"),
+             InlineKeyboardButton("🏖️ Beach & Relaxation", callback_data="interest_beach")],
+            [InlineKeyboardButton("🏔️ Nature & Hiking", callback_data="interest_nature"),
+             InlineKeyboardButton("🏛️ History & Culture", callback_data="interest_history")],
+            [InlineKeyboardButton("🍷 Food & Wine", callback_data="interest_food"),
+             InlineKeyboardButton("🎭 Nightlife & Entertainment", callback_data="interest_nightlife")],
+            [InlineKeyboardButton("⛷️ Adventure Sports", callback_data="interest_adventure"),
+             InlineKeyboardButton("💕 Romance & Couples", callback_data="interest_romance")],
+            [InlineKeyboardButton("📸 Photography", callback_data="interest_photography"),
+             InlineKeyboardButton("🧘 Spirituality & Wellness", callback_data="interest_spirituality")],
+            [InlineKeyboardButton("✅ Done", callback_data="interests_done")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    def create_season_keyboard(self) -> InlineKeyboardMarkup:
+        """Create season selection keyboard"""
+        keyboard = [
+            [InlineKeyboardButton("🌸 Spring", callback_data="season_spring"),
+             InlineKeyboardButton("☀️ Summer", callback_data="season_summer")],
+            [InlineKeyboardButton("🍂 Autumn", callback_data="season_autumn"),
+             InlineKeyboardButton("❄️ Winter", callback_data="season_winter")],
+            [InlineKeyboardButton("✅ Done", callback_data="seasons_done")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    def create_budget_keyboard(self) -> InlineKeyboardMarkup:
+        """Create budget selection keyboard"""
+        keyboard = [
+            [InlineKeyboardButton("💰 Budget-Friendly", callback_data="budget_low")],
+            [InlineKeyboardButton("💎 Mid-Range", callback_data="budget_medium")],
+            [InlineKeyboardButton("🏆 Luxury", callback_data="budget_high")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    def create_main_menu_keyboard(self) -> InlineKeyboardMarkup:
+        """Create main menu keyboard"""
+        keyboard = [
+            [InlineKeyboardButton("🎯 Setup Preferences", callback_data="start_setup"),
+             InlineKeyboardButton("⚡ Quick Recommendation", callback_data="quick_rec")],
+            [InlineKeyboardButton("🗺️ Get Recommendations", callback_data="get_recommendations"),
+             InlineKeyboardButton("👤 My Profile", callback_data="show_profile")],
+            [InlineKeyboardButton("📖 Help & Commands", callback_data="show_help"),
+             InlineKeyboardButton("🌟 Explore All", callback_data="explore_all")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Enhanced start command with professional welcome and quick buttons"""
+        user = update.effective_user
+        profile = self.get_user_profile(user.id)
+
+        welcome_text = f"""🌍 **Welcome to TravelBot Pro**, {user.first_name}!
+
+I'm your AI-powered travel consultant, designed to find perfect destinations based on your unique preferences.
+
+🎯 **What I can do:**
+• Personalized destination recommendations
+• Smart filtering by interests, budget & season
+• Professional travel insights
+• Detailed destination profiles
+
+Ready to discover your next adventure?"""
+
+        reply_markup = self.create_main_menu_keyboard()
+
+        await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    async def setup_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Comprehensive setup wizard"""
+        user_id = update.effective_user.id
+        profile = self.get_user_profile(user_id)
+
+        setup_text = """🎯 **Preference Setup Wizard**
+
+Let's personalize your travel experience! I'll ask you a few questions to understand your preferences better.
+
+**Step 1: What interests you most when traveling?**
+(You can select multiple options)"""
+
+        reply_markup = self.create_interests_keyboard()
+
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.edit_message_text(setup_text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(setup_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    async def profile_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Display enhanced user profile"""
+        user_id = update.effective_user.id
+        profile = self.get_user_profile(user_id)
+
+        profile_text = f"""👤 **Your Travel Profile**
+
+🎯 **Interests:** {', '.join(profile.interests) if profile.interests else 'Not set'}
+🌍 **Preferred Countries:** {', '.join(profile.preferred_countries) if profile.preferred_countries else 'Any'}
+📅 **Preferred Seasons:** {', '.join(profile.preferred_seasons) if profile.preferred_seasons else 'Any'}
+💰 **Budget Level:** {profile.budget_level.title() if profile.budget_level else 'Not set'}
+
+📊 **Profile Completeness:** {self._calculate_profile_completeness(profile):.0f}%
+🕒 **Last Updated:** {profile.last_updated.strftime('%Y-%m-%d %H:%M')}
+
+Use the buttons below to update preferences or get recommendations!"""
+
+        keyboard = [
+            [InlineKeyboardButton("🔄 Update Preferences", callback_data="start_setup")],
+            [InlineKeyboardButton("🎯 Get Recommendations", callback_data="get_recommendations")],
+            [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.edit_message_text(profile_text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(profile_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    def _calculate_profile_completeness(self, profile: UserProfile) -> float:
+        """Calculate profile completeness percentage"""
+        total_fields = 4
+        completed_fields = 0
+
+        if profile.interests: completed_fields += 1
+        if profile.preferred_countries: completed_fields += 1
+        if profile.preferred_seasons: completed_fields += 1
+        if profile.budget_level: completed_fields += 1
+
+        return (completed_fields / total_fields) * 100
+
+    async def recommend_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate professional travel recommendations"""
+        try:
+            user_id = update.effective_user.id
+            profile = self.get_user_profile(user_id)
+
+            # Get recommendations from knowledge graph
+            recommendations = self.knowledge_graph.find_destinations(
+                interests=profile.interests,
+                countries=profile.preferred_countries,
+                seasons=profile.preferred_seasons,
+                budget=profile.budget_level
+            )
+
+            if not recommendations:
+                text = """🤔 I need more information about your preferences to make good recommendations.
+
+Please use the Setup button to tell me about your interests and travel style!"""
+                keyboard = [[InlineKeyboardButton("🎯 Setup Preferences", callback_data="start_setup")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                if hasattr(update, 'callback_query') and update.callback_query:
+                    await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+                else:
+                    await update.message.reply_text(text, reply_markup=reply_markup)
+                return
+
+            response = "🎯 **Personalized Travel Recommendations**\n\n"
+
+            for i, rec in enumerate(recommendations, 1):
+                # Clean text more thoroughly to avoid parsing errors
+                name = rec['name'].replace('_', ' ').replace('*', '').replace('[', '').replace(']', '')
+                country = rec['country'].replace('_', ' ').replace('*', '').replace('[', '').replace(']', '')
+                description = rec['description'].replace('_', ' ').replace('*', '').replace('[', '').replace(']', '')
+                
+                response += f"**{i}. {name}, {country}** ⭐ {rec['rating']}\n"
+                response += f"💰 {rec['budget'].title()} budget\n"
+                response += f"{description}\n"
+
+                if rec['reasons']:
+                    reasons = ', '.join(rec['reasons'][:3]).replace('_', ' ').replace('*', '').replace('[', '').replace(']', '')
+                    response += f"✨ Perfect because: {reasons}\n"
+
+                activities = ', '.join(rec['activities'][:4]).replace('_', ' ').replace('*', '').replace('[', '').replace(']', '')
+                seasons = ', '.join(rec['seasons']).replace('_', ' ').replace('*', '').replace('[', '').replace(']', '')
+                response += f"🎯 Activities: {activities}\n"
+                response += f"📅 Best seasons: {seasons}\n\n"
+
+            # Add professional travel tips
+            tips = [
+                "💡 **Pro Tip:** Book flights 6-8 weeks in advance for the best deals",
+                "💡 **Pro Tip:** Consider travel insurance for international trips",
+                "💡 **Pro Tip:** Download offline maps before traveling to save on roaming charges",
+                "💡 **Pro Tip:** Pack light - you can buy most essentials at your destination",
+                "💡 **Pro Tip:** Learn basic phrases in the local language for better experiences"
+            ]
+            response += f"\n{random.choice(tips)}"
+
+            keyboard = [
+                [InlineKeyboardButton("🔄 More Recommendations", callback_data="get_recommendations")],
+                [InlineKeyboardButton("⚙️ Adjust Preferences", callback_data="start_setup")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            if hasattr(update, 'callback_query') and update.callback_query:
+                await update.callback_query.edit_message_text(response, reply_markup=reply_markup, parse_mode='Markdown')
+            else:
+                await update.message.reply_text(response, reply_markup=reply_markup, parse_mode='Markdown')
+                
+        except Exception as e:
+            logger.error(f"Error in recommend command: {e}")
+            # Fallback without markdown
+            simple_text = "🎯 Personalized Travel Recommendations\n\nSorry, there was an issue formatting the recommendations. Please try again."
+            keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
+            
+            if hasattr(update, 'callback_query') and update.callback_query:
+                await update.callback_query.edit_message_text(
+                    simple_text, reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            else:
+                await update.message.reply_text(
+                    simple_text, reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Professional help command"""
+        help_text = """🆘 **TravelBot Pro - Help Guide**
+
+**🚀 Getting Started:**
+• `/start` - Welcome & quick actions
+• `/setup` - Complete preference wizard
+• `/profile` - View your travel profile
+
+**🎯 Recommendations:**
+• `/recommend` - Get personalized suggestions
+• `/quick` - Random destination pick
+
+**💬 Natural Language:**
+Just type what you're looking for:
+• "I want a romantic destination"
+• "Show me beach destinations"
+• "What about winter travel?"
+
+**🎮 Interactive Features:**
+• Smart recommendation engine
+• Personalized scoring system
+• Travel tips & insights
+
+Need more help? Just ask me anything!"""
+
+        keyboard = [
+            [InlineKeyboardButton("🎯 Setup Preferences", callback_data="start_setup")],
+            [InlineKeyboardButton("⚡ Quick Recommendation", callback_data="quick_rec")],
+            [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.edit_message_text(help_text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(help_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    async def quick_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Quick recommendation command"""
+        await self._quick_recommendation(update, context)
+
+    def _check_rate_limit(self, user_id: int, button_data: str) -> bool:
+        """Check if user is rate limited for a specific button"""
+        import time
+        
+        current_time = time.time()
+        if user_id not in self.user_button_clicks:
+            self.user_button_clicks[user_id] = {}
+        
+        if button_data not in self.user_button_clicks[user_id]:
+            self.user_button_clicks[user_id][button_data] = []
+        
+        clicks = self.user_button_clicks[user_id][button_data]
+        
+        # Remove clicks older than 5 seconds (reduced window)
+        clicks[:] = [click_time for click_time in clicks if current_time - click_time < 5]
+        
+        # Check if user has clicked this button more than 2 times in 5 seconds (stricter)
+        if len(clicks) >= 2:
+            return False  # Rate limited
+        
+        # Add current click
+        clicks.append(current_time)
+        return True  # Not rate limited
+
+    async def _safe_edit_message(self, query, text: str, reply_markup=None, parse_mode=None):
+        """Safely edit message with error handling"""
+        try:
+            await query.edit_message_text(
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "not modified" in error_msg:
+                # Message content is the same, ignore this error
+                return
+            elif "can't parse entities" in error_msg or "bad request" in error_msg:
+                # Markdown parsing failed, try without markdown
+                try:
+                    clean_text = text.replace('**', '').replace('*', '').replace('_', ' ')
+                    await query.edit_message_text(
+                        text=clean_text,
+                        reply_markup=reply_markup
+                    )
+                except Exception:
+                    # If that also fails, send error message
+                    await query.edit_message_text(
+                        text="Something went wrong. Please try again.",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+                        ])
+                    )
+            else:
+                # Other error, send generic error message
+                await query.edit_message_text(
+                    text="Something went wrong. Please try again.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+                    ])
+                )
+
+    async def callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle all inline keyboard callbacks with proper error handling"""
+        query = update.callback_query
+        await query.answer()
+
+        try:
+            user_id = query.from_user.id
+            profile = self.get_user_profile(user_id)
+            data = query.data
+            
+            # Check rate limiting
+            if not self._check_rate_limit(user_id, data):
+                await self._safe_edit_message(
+                    query,
+                    "⏳ Slow down! You're clicking too fast.\n\n"
+                    "Please wait a moment before trying again to avoid errors.\n\n"
+                    "This helps keep the bot running smoothly for everyone!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+                    ])
+                )
+                return
+
+            # Interest selection
+            if data.startswith("interest_"):
+                interest = data.replace("interest_", "")
+                if interest not in profile.interests:
+                    profile.interests.append(interest)
+
+                await self._safe_edit_message(
+                    query,
+                    f"✅ Added: {interest.title()}\n\n"
+                    f"Selected interests: {', '.join(profile.interests)}\n\n"
+                    "Select more interests or click 'Done' to continue:",
+                    reply_markup=self.create_interests_keyboard()
+                )
+
+            elif data == "interests_done":
+                await self._safe_edit_message(
+                    query,
+                    "🗓️ Step 2: When do you prefer to travel?\n\n"
+                    "Select your preferred seasons:",
+                    reply_markup=self.create_season_keyboard()
+                )
+
+            # Season selection
+            elif data.startswith("season_"):
+                season = data.replace("season_", "")
+                if season not in profile.preferred_seasons:
+                    profile.preferred_seasons.append(season)
+
+                await self._safe_edit_message(
+                    query,
+                    f"✅ Added: {season.title()}\n\n"
+                    f"Selected seasons: {', '.join(profile.preferred_seasons)}\n\n"
+                    "Select more seasons or click 'Done' to continue:",
+                    reply_markup=self.create_season_keyboard()
+                )
+
+            elif data == "seasons_done":
+                await self._safe_edit_message(
+                    query,
+                    "💰 Step 3: What's your travel budget level?",
+                    reply_markup=self.create_budget_keyboard()
+                )
+
+            # Budget selection
+            elif data.startswith("budget_"):
+                budget = data.replace("budget_", "")
+                profile.budget_level = budget
+                profile.last_updated = datetime.now()
+
+                await self._safe_edit_message(
+                    query,
+                    f"🎉 Setup Complete!\n\n"
+                    f"Your preferences have been saved:\n"
+                    f"🎯 Interests: {', '.join(profile.interests)}\n"
+                    f"📅 Seasons: {', '.join(profile.preferred_seasons)}\n"
+                    f"💰 Budget: {budget.title()}\n\n"
+                    f"Ready to get personalized recommendations?",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🎯 Get Recommendations", callback_data="get_recommendations")],
+                        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+                    ])
+                )
+
+            # Other actions
+            elif data == "start_setup":
+                await self.setup_command(update, context)
+            elif data == "get_recommendations":
+                await self.recommend_command(update, context)
+            elif data == "show_profile":
+                await self.profile_command(update, context)
+            elif data == "show_help":
+                await self.help_command(update, context)
+            elif data == "quick_rec":
+                await self._quick_recommendation(update, context)
+            elif data == "explore_all":
+                await self._explore_all_destinations(update, context)
+            elif data == "main_menu":
+                await self._show_main_menu(update, context)
+
+        except Exception as e:
+            logger.error(f"Error in callback handler: {e}")
+            # Use safe editing for error messages
+            await self._safe_edit_message(
+                query,
+                "❌ Something went wrong. Please try again or use /start to return to the main menu.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+                ])
+            )
+
+    async def _show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show main menu"""
+        user = update.callback_query.from_user if hasattr(update, 'callback_query') else update.effective_user
+
+        welcome_text = f"""🌍 **TravelBot Pro - Main Menu**
+
+Welcome back, {user.first_name}! 
+
+Choose what you'd like to do:"""
+
+        reply_markup = self.create_main_menu_keyboard()
+
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.edit_message_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    async def _quick_recommendation(self, update, context):
+        """Provide quick recommendation without full setup"""
+        import time
+        import random
+        
+        all_destinations = self.knowledge_graph.find_destinations()
+        if not all_destinations:
+            error_text = "⚡ Quick Pick: No destinations available. Please try again later."
+            keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
+            
+            if hasattr(update, 'callback_query') and update.callback_query:
+                await self._safe_edit_message(update.callback_query, error_text, InlineKeyboardMarkup(keyboard))
+            else:
+                await update.message.reply_text(error_text, reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+
+        # Get a random destination
+        rec = random.choice(all_destinations)
+        
+        # Create unique timestamp for each recommendation
+        timestamp = int(time.time() % 10000)
+        random_num = random.randint(100, 999)
+        
+        # Clean text thoroughly
+        name = rec['name'].replace('_', ' ').replace('*', '').replace('[', '').replace(']', '').replace('`', '')
+        country = rec['country'].replace('_', ' ').replace('*', '').replace('[', '').replace(']', '').replace('`', '')
+        description = rec['description'].replace('_', ' ').replace('*', '').replace('[', '').replace(']', '').replace('`', '')
+        
+        # Create simple text without complex markdown
+        text = f"⚡ Quick Pick: {name}, {country}\n\n"
+        text += f"{description}\n\n"
+        text += f"⭐ Rating: {rec['rating']}/5\n"
+        text += f"💰 Budget: {rec['budget'].title()}\n"
+        text += f"🎯 Perfect for: {', '.join(rec['activities'][:3])}\n"
+        text += f"📅 Best time: {', '.join(rec['seasons'])}\n"
+        text += f"🔄 ID: {timestamp}-{random_num}"  # Unique identifier
+
+        keyboard = [
+            [InlineKeyboardButton("🎯 Get Personalized Recs", callback_data="start_setup")],
+            [InlineKeyboardButton("🎲 Another Quick Pick", callback_data="quick_rec")],
+            [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+        ]
+
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await self._safe_edit_message(update.callback_query, text, InlineKeyboardMarkup(keyboard))
+        else:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def _explore_all_destinations(self, update, context):
+        """Show all available destinations"""
+        all_destinations = self.knowledge_graph.find_destinations()
+
+        text = "🗺️ **All Available Destinations**\n\n"
+        for dest in all_destinations[:10]:  # Show first 10
+            text += f"• **{dest['name']}** ({dest['country']}) - ⭐ {dest['rating']}\n"
+
+        text += f"\n📍 *And {len(all_destinations) - 10} more destinations!*" if len(all_destinations) > 10 else ""
+        text += "\n\nUse Setup Preferences to get personalized recommendations!"
+
+        keyboard = [
+            [InlineKeyboardButton("🎯 Setup Preferences", callback_data="start_setup")],
+            [InlineKeyboardButton("⚡ Quick Pick", callback_data="quick_rec")],
+            [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+        ]
+
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.edit_message_text(
+                text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
+            )
+
+    async def message_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle natural language messages"""
+        text = update.message.text.lower()
+        user_id = update.effective_user.id
+
+        # Analyze message for travel intent
+        if any(word in text for word in ["recommend", "suggest", "where", "travel", "visit", "destination"]):
+            await self.recommend_command(update, context)
+        elif any(word in text for word in ["help", "commands", "what can you do"]):
+            await self.help_command(update, context)
+        elif any(word in text for word in ["setup", "preferences", "profile"]):
+            await self.setup_command(update, context)
+        elif any(word in text for word in ["thanks", "thank you", "awesome", "great"]):
+            responses = [
+                "🌟 You're welcome! Happy to help plan your next adventure!",
+                "✈️ Pleasure to assist! Hope you have an amazing trip!",
+                "🎯 Glad I could help! Safe travels and enjoy exploring!"
+            ]
+            await update.message.reply_text(random.choice(responses))
+        else:
+            keyboard = [
+                [InlineKeyboardButton("🎯 Get Recommendations", callback_data="get_recommendations")],
+                [InlineKeyboardButton("📖 Help", callback_data="show_help")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+            ]
+            await update.message.reply_text(
+                "🤔 I didn't quite understand that. Use the buttons below or try asking for travel recommendations!",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+    async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Professional error handling"""
+        logger.error(f"Exception while handling update {update}: {context.error}")
+
+        try:
+            if update and update.effective_message:
+                keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
+                await update.effective_message.reply_text(
+                    "🚫 Sorry, something went wrong. Please try again or return to the main menu.",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+        except Exception as e:
+            logger.error(f"Error in error handler: {e}")
+
+    async def set_bot_commands(self):
+        """Set bot commands for better user experience"""
+        try:
+            commands = [
+                BotCommand("start", "🌍 Start the bot and see main menu"),
+                BotCommand("setup", "🎯 Setup your travel preferences"),
+                BotCommand("recommend", "🗺️ Get personalized recommendations"),
+                BotCommand("profile", "👤 View your travel profile"),
+                BotCommand("quick", "⚡ Get a quick destination pick"),
+                BotCommand("help", "📖 Get help and see all commands")
+            ]
+
+            await self.application.bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+            logger.info("Bot commands set successfully")
+        except Exception as e:
+            logger.warning(f"Could not set bot commands: {e}")
+
+    def run(self):
+        """Run the bot with enhanced configuration"""
+        self.application = Application.builder().token(Config.BOT_TOKEN).build()
+
+        # Add handlers
+        self.application.add_handler(CommandHandler("start", self.start_command))
+        self.application.add_handler(CommandHandler("setup", self.setup_command))
+        self.application.add_handler(CommandHandler("recommend", self.recommend_command))
+        self.application.add_handler(CommandHandler("profile", self.profile_command))
+        self.application.add_handler(CommandHandler("quick", self.quick_command))
+        self.application.add_handler(CommandHandler("help", self.help_command))
+        self.application.add_handler(CallbackQueryHandler(self.callback_handler))
+        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.message_handler))
+
+        # Add error handler
+        self.application.add_error_handler(self.error_handler)
+
+        logger.info("🚀 TravelBot Pro is starting...")
+
+        # Set bot commands after starting
+        async def post_init(application):
+            await self.set_bot_commands()
+            logger.info("✅ Professional Travel Assistant is now online!")
+
+        self.application.post_init = post_init
+
+        # Run the bot
+        self.application.run_polling(drop_pending_updates=True)
+
+def main():
+    """Main entry point"""
+    try:
+        bot = TravelBot()
+        bot.run()
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        raise
+
+if __name__ == "__main__":
+    main()
